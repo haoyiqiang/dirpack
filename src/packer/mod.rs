@@ -134,38 +134,65 @@ fn default_pack_limit() -> usize {
 /// Truncation information showing what was cut.
 #[derive(Debug, Default)]
 pub struct TruncationInfo {
-    /// Total files scanned
+    /// Total files scanned after ignore/exclude filtering.
     pub files_scanned: usize,
-    /// Files listed in tree segments
+    /// Files listed in tree segments.
     pub files_in_tree: usize,
-    /// Files with signatures added
+    /// Files with at least one signature added.
     pub files_with_signatures: usize,
-    /// Directories that didn't fit in tree budget
+    /// Files eligible for signature extraction by language and size.
+    pub signature_files_candidate: usize,
+    /// Eligible files actually passed through the signature extractor.
+    pub signature_files_processed: usize,
+    /// Processed files where only part of the extracted signatures fit.
+    pub signature_files_partial: usize,
+    /// Directories that didn't fit in tree budget.
     pub dirs_truncated: usize,
 }
-
 impl TruncationInfo {
+    /// Returns true when the signature phase omitted candidate files or emitted
+    /// only part of a file's extracted signatures.
+    pub fn signatures_truncated(&self) -> bool {
+        self.signature_files_processed < self.signature_files_candidate
+            || self.signature_files_partial > 0
+    }
     /// Returns true if anything was truncated.
     pub fn has_truncation(&self) -> bool {
         self.files_in_tree < self.files_scanned || self.dirs_truncated > 0
+            || self.signatures_truncated()
     }
 
-    /// Format as a compact indicator for the output.
+    /// Format as a compact but explicit indicator for the pipe output.
     pub fn format_indicator(&self) -> Option<String> {
         if !self.has_truncation() {
             return None;
         }
 
+        let mut parts = Vec::new();
         let files_hidden = self.files_scanned.saturating_sub(self.files_in_tree);
         if files_hidden > 0 {
             let label = if files_hidden == 1 { "file" } else { "files" };
-            Some(format!("[+{} more {} truncated]", files_hidden, label))
+            parts.push(format!("+{} more {} truncated", files_hidden, label));
         } else if self.dirs_truncated > 0 {
             let label = if self.dirs_truncated == 1 { "dir" } else { "dirs" };
-            Some(format!("[+{} more {} truncated]", self.dirs_truncated, label))
-        } else {
-            None
+            parts.push(format!("+{} more {} truncated", self.dirs_truncated, label));
         }
+
+        if self.signatures_truncated() {
+            let omitted = self
+                .signature_files_candidate
+                .saturating_sub(self.signature_files_processed);
+            let detail = match (omitted, self.signature_files_partial) {
+                (0, partial) => format!("{} partial", partial),
+                (omitted, 0) => format!("{} files omitted", omitted),
+                (omitted, partial) => {
+                    format!("{} files omitted, {} partial", omitted, partial)
+                }
+            };
+            parts.push(format!("signatures truncated: {}", detail));
+        }
+
+        Some(format!("[{}]", parts.join("; ")))
     }
 }
 
@@ -179,7 +206,7 @@ pub struct PackResult {
 }
 
 // Tokens reserved for truncation indicator (only for larger budgets)
-const TRUNCATION_INDICATOR_RESERVE: usize = 15;
+const TRUNCATION_INDICATOR_RESERVE: usize = 20;
 const MIN_BUDGET_FOR_RESERVE: usize = 200;
 
 /// Pack a directory into a budgeted index (blocking if pack slots are full).
@@ -348,6 +375,14 @@ fn pack_impl(
         if let Ok(mut extractor) = SignatureExtractor::new() {
             extractor.set_max_signature_length(config.signatures.max_signature_length);
 
+            truncation.signature_files_candidate = files_by_priority
+                .iter()
+                .filter(|file| {
+                    extractor.supports_extension(&file.extension)
+                        && !file_too_large(file, config)
+                })
+                .count();
+
             let signature_budget_limit = budget.remaining();
             if signature_budget_limit > 0 {
                 let budget_target = budget.target;
@@ -361,6 +396,11 @@ fn pack_impl(
                 let mut seen_top_dirs: BTreeSet<String> = BTreeSet::new();
 
                 for file in &files_by_priority {
+                    if !extractor.supports_extension(&file.extension)
+                        || file_too_large(file, config)
+                    {
+                        continue;
+                    }
                     let top_dir = top_level_dir(&file.relative_path);
                     if seen_top_dirs.insert(top_dir.clone()) {
                         top_dir_order.push(top_dir.clone());
@@ -406,6 +446,7 @@ fn pack_impl(
                                     continue;
                                 }
 
+                                truncation.signature_files_processed += 1;
                                 let sigs = match extractor.extract_from_file(&file.path) {
                                     Ok(sigs) => sigs,
                                     Err(_) => continue,
@@ -442,6 +483,10 @@ fn pack_impl(
                                     } else {
                                         break; // Can't fit more signatures from this file
                                     }
+                                }
+
+                                if sig_texts.len() < sigs.len() {
+                                    truncation.signature_files_partial += 1;
                                 }
 
                                 // Add segment if we got any signatures

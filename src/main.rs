@@ -53,6 +53,10 @@ fn run_pack(args: PackArgs) -> anyhow::Result<()> {
         config.exclude.patterns.extend(args.exclude.iter().cloned());
     }
 
+    if args.no_content {
+        config.content.enabled = false;
+    }
+
     // Determine budget target
     let budget_target = if let Some(tokens) = args.target_tokens {
         BudgetTarget::Tokens(tokens)
@@ -239,11 +243,22 @@ fn format_full(result: &packer::PackResult) -> String {
 }
 
 fn format_json(result: &packer::PackResult) -> String {
-    format!(
-        r#"{{"budget_used":{},"budget_limit":{},"files":{},"output":{}}}"#,
-        result.budget_used,
-        result.budget_limit,
-        result.files_included,
-        serde_json::to_string(&result.output).unwrap_or_else(|_| "\"\"".to_string())
-    )
+    serde_json::json!({
+        "budget_used": result.budget_used,
+        "budget_limit": result.budget_limit,
+        "files": result.files_included,
+        "truncation": {
+            "has_truncation": result.truncation.has_truncation(),
+            "files_scanned": result.truncation.files_scanned,
+            "files_in_tree": result.truncation.files_in_tree,
+            "dirs_truncated": result.truncation.dirs_truncated,
+            "files_with_signatures": result.truncation.files_with_signatures,
+            "signature_files_candidate": result.truncation.signature_files_candidate,
+            "signature_files_processed": result.truncation.signature_files_processed,
+            "signature_files_partial": result.truncation.signature_files_partial,
+            "signatures_truncated": result.truncation.signatures_truncated(),
+        },
+        "output": result.output,
+    })
+    .to_string()
 }

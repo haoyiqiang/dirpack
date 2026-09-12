@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use streaming_iterator::StreamingIterator;
 use thiserror::Error;
-use tree_sitter::{Language, Parser, Query, QueryCursor};
+use tree_sitter::{Language, Node, Parser, Query, QueryCursor};
 
 /// Errors that can occur during signature extraction.
 #[derive(Error, Debug)]
@@ -82,17 +82,37 @@ impl Signature {
     /// Create a compact representation for pipe-delimited output.
     /// Collapses all whitespace (newlines, indentation) to single spaces.
     pub fn compact(&self) -> String {
-        self.text.split_whitespace().collect::<Vec<_>>().join(" ")
+        compact_whitespace(&self.text)
     }
 
-    /// Truncate the signature text to a maximum length.
+    /// Truncate the signature text to a maximum byte length without splitting UTF-8.
     pub fn truncated(&self, max_len: usize) -> String {
-        if self.text.len() <= max_len {
-            self.text.clone()
-        } else {
-            format!("{}...", &self.text[..max_len.saturating_sub(3)])
-        }
+        truncate_with_ellipsis(&self.text, max_len)
     }
+}
+
+fn compact_whitespace(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn truncate_with_ellipsis(text: &str, max_len: usize) -> String {
+    if text.len() <= max_len {
+        return text.to_string();
+    }
+    if max_len <= 3 {
+        return ".".repeat(max_len);
+    }
+
+    let byte_limit = max_len - 3;
+    let mut end = 0;
+    for (index, ch) in text.char_indices() {
+        let next = index + ch.len_utf8();
+        if next > byte_limit {
+            break;
+        }
+        end = next;
+    }
+    format!("{}...", &text[..end])
 }
 
 /// Configuration for a supported language.
@@ -203,7 +223,7 @@ impl SignatureExtractor {
     ) -> Option<Signature> {
         let mut name = None;
         let mut kind = None;
-        let mut text = None;
+        let mut signature_node: Option<Node<'_>> = None;
         let mut line = 0;
         let mut visibility = None;
 
@@ -220,7 +240,7 @@ impl SignatureExtractor {
                     kind = Some(self.parse_kind(node_text, ext));
                 }
                 "signature" => {
-                    text = Some(self.clean_signature(node_text));
+                    signature_node = Some(capture.node);
                 }
                 "visibility" => {
                     visibility = Some(node_text.to_string());
@@ -229,21 +249,19 @@ impl SignatureExtractor {
             }
         }
 
-        // If we have a name but no explicit signature, construct one
-        let final_text = text.or_else(|| {
-            let k = kind.as_ref()?;
-            let n = name.as_ref()?;
-            Some(format!("{} {}", k, n))
-        })?;
-
+        let final_text = signature_node
+            .map(|node| self.clean_signature(node, source))
+            .filter(|text| !text.is_empty())
+            .or_else(|| {
+                let k = kind.as_ref()?;
+                let n = name.as_ref()?;
+                Some(format!("{} {}", k, n))
+            })?;
+        let final_text = compact_whitespace(&final_text);
         Some(Signature {
             kind: kind?,
             name: name?,
-            text: if final_text.len() > self.max_signature_length {
-                format!("{}...", &final_text[..self.max_signature_length - 3])
-            } else {
-                final_text
-            },
+            text: truncate_with_ellipsis(&final_text, self.max_signature_length),
             line,
             visibility,
         })
@@ -272,20 +290,23 @@ impl SignatureExtractor {
         }
     }
 
-    fn clean_signature(&self, text: &str) -> String {
-        // Remove body, keep just the signature
-        let text = text.trim();
-
-        // Find where the body starts (opening brace or colon for Python)
-        if let Some(pos) = text.find('{') {
-            text[..pos].trim().to_string()
-        } else if let Some(pos) = text.find(":\n") {
-            // Python function with body
-            text[..pos].trim().to_string()
-        } else {
-            // Single line or no body
-            text.lines().next().unwrap_or(text).trim().to_string()
-        }
+    fn clean_signature(&self, node: Node<'_>, source: &str) -> String {
+        // Tree-sitter exposes the implementation block as the `body` field for
+        // functions, methods, classes, interfaces, structs, and similar nodes.
+        // Slicing at that node (rather than at the first `{`) preserves valid
+        // TypeScript return object types and default object values in parameters.
+        // Nodes without a body, such as type aliases and function prototypes,
+        // keep their complete declaration.
+        let end = node
+            .child_by_field_name("body")
+            .map(|body| body.start_byte())
+            .unwrap_or_else(|| node.end_byte());
+        source
+            .get(node.start_byte()..end)
+            .or_else(|| node.utf8_text(source.as_bytes()).ok())
+            .unwrap_or("")
+            .trim()
+            .to_string()
     }
 
     // Language registration methods
@@ -958,6 +979,40 @@ const greet = (name: string) => `Hi, ${name}`;
     }
 
     #[test]
+    fn test_typescript_multiline_type_and_return_object_are_complete() {
+        let mut extractor = SignatureExtractor::new().unwrap();
+        let source = r#"
+type ParsedSpec =
+  | { kind: "set"; line: number }
+  | { kind: "insert"; after: number };
+
+function parseHashlineEdit(edit: HashlineEdit): {
+  spec: ParsedSpec;
+  dst: string[];
+} {
+  return buildResult(edit);
+}
+"#;
+
+        let sigs = extractor.extract("ts", source).unwrap();
+        let parsed_spec = sigs.iter().find(|sig| sig.name == "ParsedSpec").unwrap();
+        let parser = sigs
+            .iter()
+            .find(|sig| sig.name == "parseHashlineEdit")
+            .unwrap();
+
+        assert_eq!(
+            parsed_spec.compact(),
+            "type ParsedSpec = | { kind: \"set\"; line: number } | { kind: \"insert\"; after: number };"
+        );
+        assert_eq!(
+            parser.compact(),
+            "function parseHashlineEdit(edit: HashlineEdit): { spec: ParsedSpec; dst: string[]; }"
+        );
+        assert!(!parser.text.contains("return buildResult"));
+    }
+
+    #[test]
     fn test_unsupported_extension() {
         let mut extractor = SignatureExtractor::new().unwrap();
         let result = extractor.extract("xyz", "some content");
@@ -978,6 +1033,14 @@ fn very_long_function_name_that_exceeds_the_limit(param1: VeryLongTypeName, para
         for sig in &sigs {
             assert!(sig.text.len() <= 50, "signature should be truncated");
         }
+    }
+
+    #[test]
+    fn test_signature_truncation_preserves_utf8_boundaries() {
+        let text = "fn 日本語の長い関数名(param: String) -> String";
+        let truncated = truncate_with_ellipsis(text, 20);
+        assert!(truncated.len() <= 20);
+        assert!(truncated.ends_with("..."));
     }
 
     #[test]

@@ -84,6 +84,10 @@ pub struct PackArgs {
     #[arg(long = "no-signatures")]
     pub no_signatures: bool,
 
+    /// Skip raw content and snippet inclusion
+    #[arg(long = "no-content")]
+    pub no_content: bool,
+
     /// Disable the on-disk pack cache for this invocation
     #[arg(long = "no-cache")]
     pub no_cache: bool,
@@ -120,6 +124,7 @@ impl Default for PackArgs {
             include: Vec::new(),
             no_git: false,
             no_signatures: false,
+            no_content: false,
             no_cache: false,
             title: None,
             verbose: false,

@@ -67,6 +67,8 @@ Markdown with sections for structure, signatures, and content.
 
 Machine-readable output with budget stats.
 
+The JSON object includes structured `truncation` metadata for tree and signature coverage (`files_scanned`, `files_in_tree`, signature candidates/processed/partial counts, and `signatures_truncated`). Pipe output also appends a compact indicator whenever either the tree or signature phase is incomplete.
+
 ## Configuration
 
 Create `dirpack.toml` in your project:
@@ -250,6 +252,7 @@ dirpack pack [PATH] [OPTIONS]
   --root-label <LABEL>      Override root path in output (e.g., '.')
   --no-git                  Don't use git ls-files
   --no-signatures           Skip tree-sitter extraction
+  --no-content              Skip raw content and snippet inclusion
   --no-cache                Disable the on-disk pack cache for this run
   -v, --verbose             Show stats
 

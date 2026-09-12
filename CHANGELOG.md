@@ -18,6 +18,7 @@ Semantic Versioning.
 - `test_content_weight` and `fixture_content_weight` in `[priority]` (both default 0.0). Test and fixture files get spine + signatures but never content body. Set to 1.0 to restore old behavior.
 - Import-only snippet detection: truncated snippets where >80% of lines are import/require/use statements are skipped automatically.
 - Content extractors: optional `extract` field on priority rules transforms file content before budget accounting. Four built-in extractors: `json_keys` (package.json deps/scripts), `toml_sections` (Cargo.toml dependencies), `lines_matching` (go.mod require blocks), `api_surface` (pub mod/use/fn declarations from entry points). Default rules auto-extract for common manifests and lib.rs files. Configurable per-pattern in dirpack.toml.
+- `--no-content` disables raw content and snippet phases, allowing integrations to request a true tree/signature-only map.
 
 ### Changed
 - Content phase skips files under 50 bytes (fully represented by spine) and snippets truncated to fewer than 3 lines (eliminates single-import/shebang junk). Among equal-priority files, larger files now sort first for content inclusion instead of smaller ones.
@@ -25,6 +26,11 @@ Semantic Versioning.
 ### Fixed
 - Submodule-like edge-case tests now stage their nested `.git` file in a temp copy of the fixture so colocated `jj` repos do not report phantom deletions under `tests/fixtures/submodule_like/`.
 - User-configured `[exclude] patterns` now apply in `--no-git` mode. Previously they were silently dropped when `use_git` was false, which meant `--no-git` packs could scan directories that should have been excluded (e.g., `target/`, `node_modules/`).
+- Multi-line signatures now preserve complete TypeScript union aliases, object return types, and default object values by cutting at the tree-sitter body node instead of the first `{`.
+- Signature budget truncation is now explicit in pipe output and structured JSON metadata, including candidate, processed, and partial signature-file counts.
+- Signature length truncation no longer splits UTF-8 code points.
+- The safe-path test now compares canonical paths, avoiding `/tmp` versus `/private/tmp` failures on macOS.
+- Signature budget shares now ignore top-level directories with no extractable source files, so non-code data/config directories cannot cause otherwise avoidable partial signatures.
 
 ## [0.3.3] - 2026-02-20
 

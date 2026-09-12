@@ -126,7 +126,7 @@ impl CacheKey {
 }
 
 /// On-disk entry schema. Bumped if the layout changes.
-const ENTRY_SCHEMA_VERSION: u32 = 1;
+const ENTRY_SCHEMA_VERSION: u32 = 2;
 
 /// Cached pack result, serialized to disk as one JSON file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -149,26 +149,33 @@ pub struct TruncationSnapshot {
     pub files_scanned: usize,
     pub files_in_tree: usize,
     pub files_with_signatures: usize,
+    pub signature_files_candidate: usize,
+    pub signature_files_processed: usize,
+    pub signature_files_partial: usize,
     pub dirs_truncated: usize,
 }
-
 impl From<&TruncationInfo> for TruncationSnapshot {
     fn from(t: &TruncationInfo) -> Self {
         TruncationSnapshot {
             files_scanned: t.files_scanned,
             files_in_tree: t.files_in_tree,
             files_with_signatures: t.files_with_signatures,
+            signature_files_candidate: t.signature_files_candidate,
+            signature_files_processed: t.signature_files_processed,
+            signature_files_partial: t.signature_files_partial,
             dirs_truncated: t.dirs_truncated,
         }
     }
 }
-
 impl From<TruncationSnapshot> for TruncationInfo {
     fn from(s: TruncationSnapshot) -> Self {
         TruncationInfo {
             files_scanned: s.files_scanned,
             files_in_tree: s.files_in_tree,
             files_with_signatures: s.files_with_signatures,
+            signature_files_candidate: s.signature_files_candidate,
+            signature_files_processed: s.signature_files_processed,
+            signature_files_partial: s.signature_files_partial,
             dirs_truncated: s.dirs_truncated,
         }
     }

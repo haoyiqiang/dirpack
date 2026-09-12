@@ -30,9 +30,9 @@ fn test_rejects_mixed_traversal() {
 #[test]
 fn test_resolves_safe_path() {
     let root = TempDir::new().expect("tempdir");
-    let resolved =
-        resolve_entry_within_root(root.path(), Path::new("safe/dir/file.txt"))
-            .expect("expected safe path to resolve");
-    assert!(resolved.starts_with(root.path()));
+    let canonical_root = root.path().canonicalize().expect("canonical tempdir");
+    let resolved = resolve_entry_within_root(root.path(), Path::new("safe/dir/file.txt"))
+        .expect("expected safe path to resolve");
+    assert!(resolved.starts_with(&canonical_root));
     assert!(resolved.ends_with(Path::new("safe/dir/file.txt")));
 }
